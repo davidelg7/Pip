@@ -2,7 +2,8 @@ from mppsolar import mppUtils
 from mppsolar.mppinverter import mppInverter, NoDeviceError
 import threading
 from datetime import datetime
-from datetime import timedelta
+from paho.mqtt.client import Client
+import time
 def getVal(_dict, key, ind=None):
     if key not in _dict:
         return ""
@@ -14,23 +15,86 @@ def getVal(_dict, key, ind=None):
 class Inverter:
 
 
-    def __init__(self, serial_device=None, baud_rate=9600, inverter_model='standard',interval=1):
+    def __init__(self, serial_device=None, baud_rate=2400, inverter_model='standard',interval=1):
         if (serial_device is None):
             raise NoDeviceError("A serial device must be supplied, e.g. /dev/ttyUSB0")
-        self.inverter = mppInverter(serial_device, baud_rate, inverter_model)
-        self.data={}
-        self.interval=interval
-        x=threading.Thread(target=self.run)
-        # x.setDaemon(True)
-        x.start()
-    def run(self):
-        while True:
+
+        def on_message(client, userdata, message):
+            topic=message.topic
+            payload=message.payload.decode()
             try:
-                now=datetime.now()
-                self.data=self.getFullStatus()
-                print(datetime.now()-now)
+                    if  topic=="Set Mode":
+                        self.r=False
+                        time.sleep(11)
+                        if payload=="Battery Mode":
+                            print("provo battery")
+                            self.getResponse("POP02")
+                        if payload=="Line Mode":
+                            self.getResponse("POP00")
+                        self.r=True
+                        time.sleep(11)
+
             except Exception as e:
                 print(e)
+
+
+        self.client= Client(client_id = "inverter")
+        self.r=True
+
+        self.client.connect(host="192.168.1.5",port=1883)
+
+        self.client.on_message = on_message
+        self.client.subscribe("Set Mode")
+
+        self.inverter = mppInverter(serial_device, baud_rate, inverter_model)
+        self.topicValue={
+            "work_mode":"work_mode",
+            "grid_voltage":"Enel voltage",
+            "ac_output_voltage":"Inverter voltage",
+            "total_output_active_power":"Inverter power",
+            "work_mode":"Mode",
+            "battery_voltage":"Battery voltage",
+            "total_charging_current":"Battery charge",
+            "battery_discharge_current":"Battery discharge",
+            "pv_input_voltage":"Panel voltage"
+        }
+        self.data={}
+        self.interval=interval
+        self.x=threading.Thread(target=self.run)
+        self.x.start()
+        y=threading.Thread(target=self.client.loop_forever)
+        y.setDaemon(True)
+        y.start()
+        # x.setDaemon(True)
+
+    def run(self):
+        while True:
+            while self.r:
+
+                try:
+
+                    self.data=self.getFullStatus()
+                    d={}
+                    for di in self.data:
+                        if di in self.topicValue:
+                            d[self.topicValue[di]]=self.data[di]["value"]
+
+                    d["Battery current"]=d["Battery charge"]-d["Battery discharge"]-75/d["Battery voltage"]
+                    d["Enel current"]=0
+                    if d["Mode"]=="Battery Mode":
+                        d["Inverter current"] = d["Inverter power"]/d["Inverter voltage"]
+                        d["Panel current"]=(d["Inverter power"]+d["Battery current"]*d["Battery voltage"])/d["Panel voltage"]
+                        if d["Panel current"]<0:
+                            d["Panel current"]=0
+                    elif d["Mode"]=="Line Mode":
+                        d["Enel current"] = d["Inverter power"] / d["Inverter voltage"]
+                        d["Panel current"] = (d["Battery current"] * d["Battery voltage"]) / d["Panel voltage"]
+                    for k in d:
+                        self.client.publish(topic=k, payload=d[k])
+
+                except Exception as e:
+                    print(e)
+            time.sleep(10)
     def getFullCommand(self, cmd):
         return self.inverter._getCommand(cmd)
 
