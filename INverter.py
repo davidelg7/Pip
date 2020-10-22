@@ -11,6 +11,7 @@ def getVal(_dict, key, ind=None):
         return _dict[key]
     else:
         return _dict[key][ind]
+lock=threading.Lock()
 
 class Inverter:
 
@@ -18,25 +19,28 @@ class Inverter:
     def __init__(self, serial_device=None, baud_rate=2400, inverter_model='standard',interval=1):
         if (serial_device is None):
             raise NoDeviceError("A serial device must be supplied, e.g. /dev/ttyUSB0")
-
+        self.state=""
         def on_message(client, userdata, message):
+            global lock
             topic=message.topic
             payload=message.payload.decode()
+            # print ("Acquire message",lock.acquire())
             try:
-                    if  topic=="Set Mode":
-                        self.r=False
-                        time.sleep(11)
-                        if payload=="Battery Mode":
-                            print("provo battery")
-                            self.getResponse("POP02")
-                        if payload=="Line Mode":
-                            self.getResponse("POP00")
-                        self.r=True
-                        time.sleep(11)
+
+                        if  topic=="Set Mode":
+                            # self.r=False
+                            # time.sleep(8)
+                            if payload=="Battery Mode":
+                                self.state="Battery Mode"
+                                # print(self.getResponse("POP02"))
+                            if payload=="Line Mode":
+                                self.state="Line Mode"
+                                # print(self.getResponse("POP00"))
 
             except Exception as e:
-                print(e)
+                    print(e)
 
+            # print("Release message", lock.release())
 
         self.client= Client(client_id = "inverter")
         self.r=True
@@ -68,33 +72,39 @@ class Inverter:
         # x.setDaemon(True)
 
     def run(self):
-        while True:
-            while self.r:
+            global lock
+            while True:
 
                 try:
 
-                    self.data=self.getFullStatus()
-                    d={}
-                    for di in self.data:
-                        if di in self.topicValue:
-                            d[self.topicValue[di]]=self.data[di]["value"]
+                        self.data=self.getFullStatus()
+                        d={}
+                        for di in self.data:
+                            if di in self.topicValue:
+                                d[self.topicValue[di]]=self.data[di]["value"]
 
-                    d["Battery current"]=d["Battery charge"]-d["Battery discharge"]-75/d["Battery voltage"]
-                    d["Enel current"]=0
-                    if d["Mode"]=="Battery Mode":
-                        d["Inverter current"] = d["Inverter power"]/d["Inverter voltage"]
-                        d["Panel current"]=(d["Inverter power"]+d["Battery current"]*d["Battery voltage"])/d["Panel voltage"]
-                        if d["Panel current"]<0:
-                            d["Panel current"]=0
-                    elif d["Mode"]=="Line Mode":
-                        d["Enel current"] = d["Inverter power"] / d["Inverter voltage"]
-                        d["Panel current"] = (d["Battery current"] * d["Battery voltage"]) / d["Panel voltage"]
-                    for k in d:
-                        self.client.publish(topic=k, payload=d[k])
+                        d["Battery current"]=d["Battery charge"]-d["Battery discharge"]-75/d["Battery voltage"]
+                        d["Enel current"]=0
+                        if d["Mode"]=="Battery Mode":
+                            d["Inverter current"] = d["Inverter power"]/d["Inverter voltage"]
+                            d["Panel current"]=(d["Inverter power"]+d["Battery current"]*d["Battery voltage"])/d["Panel voltage"]
+                            if d["Panel current"]<0:
+                                d["Panel current"]=0
+                        elif d["Mode"]=="Line Mode":
+                            d["Enel current"] = d["Inverter power"] / d["Inverter voltage"]
+                            d["Panel current"] = (d["Battery current"] * d["Battery voltage"]) / d["Panel voltage"]
+                        for k in d:
+                            self.client.publish(topic=k, payload=d[k])
+                        print(d)
+                        if self.state!="" and d["Mode"]!=self.state:
+                            if self.state=="Battery Mode":
+                                print(self.getResponseDict("POP02"))
+                            if self.state=="Line Mode":
+                                print(self.getResponseDict("POP00"))
+
 
                 except Exception as e:
-                    print(e)
-            time.sleep(10)
+                        print(e)
     def getFullCommand(self, cmd):
         return self.inverter._getCommand(cmd)
 
